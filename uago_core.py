@@ -5,13 +5,15 @@ import logging
 from datetime import datetime
 import json
 import re
+import time
 from scipy import ndimage
+from scipy.signal import correlate2d
 from skimage import measure, feature
 import pywt  # pip install pywt
 from uago_config import UAGO_CONFIG
-
+# from mistralai.exceptions import MistralException  # Если SDK имеет; else catch Exception
 class UAGOCore:
-    def __init__(self, api_key: Optional[str] = None, demo_mode: bool = False):
+    def __init__(self, api_key: Optional[str] = None, demo_mode: bool = False, max_refinements: int = 1):
         self.api_key = api_key
         self.demo_mode = demo_mode or (api_key is None)
         self.logger = logging.getLogger("UAGO")
@@ -24,10 +26,36 @@ class UAGOCore:
                 self.logger.info("Mistral API initialized successfully")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize Mistral API: {e}. Falling back to rule-based.")
-                self.demo_mode = True
+                self.demo_mode = True  # FIXED: Enable fallback (as per previous check)
         self.current_cycle_data = {}
-        self.max_refinements = 2
-
+        self.max_refinements = max_refinements  # NEW: Save from arg
+    def _safe_mistral_call(self, prompt: str, phase: int, iteration: int = 1) -> str:
+        for attempt in range(3):
+            try:
+                response = self.mistral_client.chat.complete(
+                    model="mistral-small-latest",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3
+                )
+                return response.choices[0].message.content
+            except Exception as e:  # Catch 429
+                if "429" in str(e) or "rate limit" in str(e).lower():
+                    wait = 2 ** attempt + np.random.uniform(0, 1)  # Backoff 2,4,8s + jitter
+                    self.logger.warning(f"Rate limit hit (Phase {phase} Iter {iteration}), wait {wait:.1f}s (attempt {attempt+1}/3)")
+                    time.sleep(wait)
+                    continue
+                raise e
+        raise Exception(f"Max retries exceeded for Phase {phase} Iter {iteration}")
+    def _extract_json(self, content: str) -> str:
+        # Code block first
+        code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL | re.IGNORECASE)
+        if code_match:
+            return code_match.group(1).strip()
+        # Fallback braces (nested-aware)
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+        if json_match:
+            return json_match.group()
+        return "{}"
     def process_frame(self, frame: np.ndarray, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         self.current_cycle_data = {
             "timestamp": datetime.now().isoformat(),
@@ -108,7 +136,7 @@ class UAGOCore:
         
         moments = cv2.moments(binary)
         hu_moments = cv2.HuMoments(moments).flatten()[:3]
-        autocorr = ndimage.correlate(gray_roi.astype(float), gray_roi.astype(float), mode='same')
+        autocorr = correlate2d(gray_roi.astype(float), gray_roi.astype(float), mode='same')
         repetition = np.max(autocorr[1:]) / np.max(autocorr) > 0.7
         symmetry = "approximate rotational" if abs(hu_moments[0]) < 0.5 and repetition else "asymmetric"
         
@@ -126,12 +154,7 @@ class UAGOCore:
         if self.mistral_client:
             try:
                 prompt = self._build_hypothesis_prompt(phase2_data)
-                response = self.mistral_client.chat.complete(
-                    model="mistral-small-latest",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3
-                )
-                content = response.choices[0].message.content
+                content = self._safe_mistral_call(prompt, phase=3, iteration=1)  # NEW: Use safe call
                 hypotheses_data = self._parse_mistral_response(content)
                 log_entry = {"phase": 3, "iteration": 1, "prompt": prompt, "response": content, "parsed": hypotheses_data}
                 self.mistral_logs.append(log_entry)
@@ -155,13 +178,18 @@ Generate EXACTLY 3 prioritized hypotheses. Each: id (H1-H3), desc (concise math,
 Output ONLY valid JSON: {{"hypotheses": [{{"id": "H1", "desc": "IFS with C6 sym", "priority": 0.95}}]}}"""
 
     def _parse_mistral_response(self, content: str) -> Dict[str, Any]:
+        json_str = self._extract_json(content)  # NEW: Extract first
         try:
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-        except json.JSONDecodeError:
-            self.logger.warning("JSON parse failed, using fallback.")
-        return {"hypotheses": [{"id": "H1", "desc": f"Fractal dim {self.current_cycle_data['phases'].get('phase2', {}).get('dimensionality', 2.0):.2f}", "priority": 0.8}]}
+            parsed = json.loads(json_str)
+            # Validate keys for phase3
+            if 'hypotheses' not in parsed:
+                raise ValueError("Missing hypotheses")
+            return parsed
+        except (json.JSONDecodeError, ValueError) as e:
+            self.logger.warning(f"Parse failed for content: {content[:200]}... Error: {e}")
+            # Enhanced fallback: Rule-based
+            phase2_data = self.current_cycle_data['phases'].get('phase2', {})
+            return self._generate_rule_based_hypotheses(phase2_data)
 
     def phase4_adaptive_measurement(self, frame: np.ndarray) -> Dict[str, Any]:
         phase3_data = self.current_cycle_data["phases"].get("phase3", {})
@@ -224,12 +252,7 @@ Output ONLY valid JSON: {{"hypotheses": [{{"id": "H1", "desc": "IFS with C6 sym"
         if self.mistral_client:
             try:
                 prompt = self._build_model_search_prompt(phase2_data, phase3_data, phase4_data)
-                response = self.mistral_client.chat.complete(
-                    model="mistral-small-latest",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3
-                )
-                content = response.choices[0].message.content
+                content = self._safe_mistral_call(prompt, phase=5, iteration=iteration)  # NEW: Use safe call
                 model_data = self._parse_model_response(content)
                 log_entry = {"phase": 5, "iteration": iteration, "prompt": prompt, "response": content, "parsed": model_data}
                 self.mistral_logs.append(log_entry)
@@ -247,18 +270,23 @@ Output ONLY valid JSON: {{"hypotheses": [{{"id": "H1", "desc": "IFS with C6 sym"
 Select minimal from {', '.join(candidates)}. Derive LaTeX formula + params (tie to dim={invariants.get('dimensionality',2.0):.2f}, scales={invariants.get('scales',[])}).
 Plan 1-2 validation steps.
 
-ONLY JSON: {{"model": "Tiling", "latex_formula": r"\\mathbb{{Z}}^2 \\rtimes D_8", "parameters": {{"period":80}}, "planned_steps": ["Check coverage", "Perturb sym"]}}"""
-
+ONLY JSON: {{"model": "Tiling", "latex_formula": r"\\mathbb{{Z}}^2 \\rtimes D_8", "parameters": {{"period":80}}, "planned_steps": ["Check coverage", "Perturb sym"]}}. Do NOT explain; respond EXCLUSIVELY with the JSON object."""
     def _parse_model_response(self, content: str) -> Dict[str, Any]:
+        json_str = self._extract_json(content)  # NEW: Extract first
         try:
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                data.setdefault("planned_steps", ["Generic validation"])
-                return data
-        except json.JSONDecodeError:
-            pass
-        return {"model": "Inferred geometric", "latex_formula": f"\\dim = {self.current_cycle_data['phases'].get('phase2', {}).get('dimensionality',2.0):.2f}", "parameters": {}, "planned_steps": []}
+            data = json.loads(json_str)
+            # Validate keys for phase5
+            if 'model' not in data or 'latex_formula' not in data:
+                raise ValueError("Missing model or formula")
+            data.setdefault("planned_steps", ["Generic validation"])
+            return data
+        except (json.JSONDecodeError, ValueError) as e:
+            self.logger.warning(f"Parse failed for content: {content[:200]}... Error: {e}")
+            # Enhanced fallback: Rule-based for phase5
+            phase2_data = self.current_cycle_data['phases'].get('phase2', {})
+            phase3_data = self.current_cycle_data['phases'].get('phase3', {})
+            phase4_data = self.current_cycle_data['phases'].get('phase4', {})
+            return self._generate_rule_based_model(phase2_data, phase3_data, phase4_data)
 
     def _generate_rule_based_model(self, invariants: Dict, hypotheses: Dict, measurements: Dict) -> Dict[str, Any]:
         top_desc = hypotheses.get("hypotheses", [{}])[0].get("desc", "").lower()
@@ -318,14 +346,9 @@ ONLY JSON: {{"model": "Tiling", "latex_formula": r"\\mathbb{{Z}}^2 \\rtimes D_8"
         while refinement_needed and refinements < self.max_refinements:
             self.logger.info(f"Phase6: Refining model (iter {refinements+1})")
             if self.mistral_client:
-                feedback_prompt = f"Refine model '{model}' based on low validation {validation_score}. Improve formula for invariants {json.dumps(self.current_cycle_data['phases']['phase2'])}."
+                feedback_prompt = f"Refine model '{model}' based on low validation {validation_score}. Improve formula for invariants {json.dumps(self.current_cycle_data['phases'].get('phase2', {}))}."
                 try:
-                    response = self.mistral_client.chat.complete(
-                        model="mistral-small-latest",
-                        messages=[{"role": "user", "content": feedback_prompt}],
-                        temperature=0.3
-                    )
-                    content = response.choices[0].message.content
+                    content = self._safe_mistral_call(feedback_prompt, phase=5, iteration=refinements+2)  # FIXED: Use safe_call
                     new_model_data = self._parse_model_response(content)
                     self.current_cycle_data["phases"]["phase5"] = new_model_data  # Update
                     log_entry = {"phase": 5, "iteration": refinements+2, "prompt": feedback_prompt, "response": content, "parsed": new_model_data}

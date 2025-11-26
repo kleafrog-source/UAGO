@@ -72,6 +72,15 @@ with st.sidebar.expander("🔑 API Settings", expanded=True):
         help="Use demo data instead of live processing"
     )
 
+    if 'refine_models' not in st.session_state:
+        st.session_state.refine_models = False  # FIXED: Init session_state
+
+    st.session_state.refine_models = st.checkbox(
+        "Enable Model Refinement (extra API call)",
+        value=st.session_state.refine_models,
+        help="Enable model refinement using AI"
+    )
+
     if st.session_state.demo_mode:
         st.info("Running in demo mode with preloaded examples")
 
@@ -135,7 +144,7 @@ with tab1:
         if uploaded_file is not None:
             if input_type == "Upload Image":
                 image = Image.open(uploaded_file)
-                preview_placeholder.image(image, caption="Uploaded Image", use_container_width=True)
+                preview_placeholder.image(image, caption="Uploaded Image", width='stretch')
             elif input_type == "Upload Video":
                 preview_placeholder.info("Video uploaded. Click 'Process' to analyze key frames.")
         elif input_type == "Use Demo":
@@ -148,10 +157,10 @@ with tab1:
     col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
 
     with col_btn1:
-        process_button = st.button("▶️ Process", type="primary", use_container_width=True)
+        process_button = st.button("▶️ Process", type="primary", width='stretch')
 
     with col_btn2:
-        clear_button = st.button("🗑️ Clear Logs", use_container_width=True)
+        clear_button = st.button("🗑️ Clear Logs", width='stretch')
 
     if clear_button:
         st.session_state.logs = []
@@ -167,7 +176,8 @@ with tab1:
 
             uago = UAGOCore(
                 api_key=st.session_state.api_key if not st.session_state.demo_mode else None,
-                demo_mode=st.session_state.demo_mode
+                demo_mode=st.session_state.demo_mode,
+                max_refinements=1 if st.session_state.refine_models else 0  # FIXED: Pass from UI
             )
 
             frame = None

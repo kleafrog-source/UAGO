@@ -60,3 +60,10 @@ Examples:
 
 if __name__ == "__main__":
     main()
+try:
+    result = subprocess.run([...], check=True, timeout=None)  # No timeout for manual stop
+except KeyboardInterrupt:
+    print("Streamlit stopped by user.")
+    sys.exit(0)
+except subprocess.TimeoutExpired:
+    print("Streamlit timed out.")
