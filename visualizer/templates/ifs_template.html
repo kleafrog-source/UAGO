@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UAGO IFS Visualization</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <style>
+        body { margin: 0; font-family: sans-serif; display: flex; justify-content: center; align-items: center; background-color: #f0f0f0; height: 100vh; }
+        #container { display: flex; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        #canvas-container { position: relative; }
+        #error-banner {
+            display: {% if error_message %}flex{% else %}none{% endif %};
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background-color: #e74c3c;
+            color: white;
+            padding: 10px;
+            text-align: center;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        #controls-container {
+            width: 250px;
+            padding: 20px;
+            background-color: #fff;
+            display: flex;
+            flex-direction: column;
+        }
+        h3 { margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .control-group, .info-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-size: 12px; color: #555; }
+        input[type="range"] { width: 100%; }
+        .value-label { font-weight: bold; margin-left: 10px; }
+        .info-item { font-size: 13px; margin-bottom: 5px; }
+        .info-item strong { color: #333; }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="canvas-container">
+            <div id="p5-canvas"></div>
+            <div id="error-banner">{{ error_message }}</div>
+        </div>
+        <div id="controls-container">
+            <h3>Controls</h3>
+            <div class="control-group">
+                <label for="iterations">Iterations: <span id="iterations-value" class="value-label">5</span></label>
+                <input type="range" id="iterations" min="1" max="10" value="5" step="1">
+            </div>
+            <div class="control-group">
+                <label for="scale">Scale: <span id="scale-value" class="value-label">0.5</span></label>
+                <input type="range" id="scale" min="0.1" max="0.9" value="0.5" step="0.01">
+            </div>
+             <div class="control-group">
+                <label for="transX">Translation X: <span id="transX-value" class="value-label">0.0</span></label>
+                <input type="range" id="transX" min="-0.5" max="0.5" value="0.0" step="0.01">
+            </div>
+            <div class="control-group">
+                <label for="transY">Translation Y: <span id="transY-value" class="value-label">0.0</span></label>
+                <input type="range" id="transY" min="-0.5" max="0.5" value="0.0" step="0.01">
+            </div>
+            <div class="control-group">
+                <label for="rotation">Rotation:</label>
+                <select id="rotation">
+                    <option value="0">0°</option>
+                    <option value="90">90°</option>
+                    <option value="180">180°</option>
+                    <option value="270">270°</option>
+                </select>
+            </div>
+
+            <h3 style="margin-top: 20px;">Invariants</h3>
+            <div class="info-group">
+                <div class="info-item"><strong>Model:</strong> {{ model }}</div>
+                <div class="info-item"><strong>Dimension:</strong> {{ parameters.dimensionality | round(4) }}</div>
+                <div class="info-item"><strong>Symmetry:</strong> {{ parameters.symmetry_group }}</div>
+                <div class="info-item"><strong>Scales:</strong> {{ parameters.scales | join(', ') }}</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const sketch = (p) => {
+            let iterations, scale, transX, transY, rotation;
+            const transforms = {{ transforms | tojson }};
+            const canvasSize = 600;
+
+            const updateValues = () => {
+                iterations = parseInt(document.getElementById('iterations').value);
+                scale = parseFloat(document.getElementById('scale').value);
+                transX = parseFloat(document.getElementById('transX').value);
+                transY = parseFloat(document.getElementById('transY').value);
+                rotation = parseInt(document.getElementById('rotation').value);
+                document.getElementById('iterations-value').innerText = iterations;
+                document.getElementById('scale-value').innerText = scale.toFixed(2);
+                document.getElementById('transX-value').innerText = transX.toFixed(2);
+                document.getElementById('transY-value').innerText = transY.toFixed(2);
+                p.redraw();
+            };
+
+            p.setup = () => {
+                p.createCanvas(canvasSize, canvasSize).parent('p5-canvas');
+                p.noLoop();
+                document.getElementById('iterations').addEventListener('input', updateValues);
+                document.getElementById('scale').addEventListener('input', updateValues);
+                document.getElementById('transX').addEventListener('input', updateValues);
+                document.getElementById('transY').addEventListener('input', updateValues);
+                document.getElementById('rotation').addEventListener('change', updateValues);
+                updateValues();
+            };
+
+            p.draw = () => {
+                p.background(255);
+                p.stroke(0);
+                p.strokeWeight(1);
+
+                let points = [p.createVector(0, 0)];
+
+                for (let i = 0; i < iterations; i++) {
+                    let nextPoints = [];
+                    for (const pt of points) {
+                        for (const t of transforms) {
+                            const newPt = p.createVector(
+                                t.a * pt.x + t.b * pt.y + t.e,
+                                t.c * pt.x + t.d * pt.y + t.f
+                            );
+
+                            // Apply global controls
+                            let controlledPt = p.createVector(newPt.x, newPt.y);
+                            controlledPt.mult(scale);
+
+                            let angle = p.radians(rotation);
+                            let rotatedX = controlledPt.x * p.cos(angle) - controlledPt.y * p.sin(angle);
+                            let rotatedY = controlledPt.x * p.sin(angle) + controlledPt.y * p.cos(angle);
+
+                            controlledPt.x = rotatedX + transX;
+                            controlledPt.y = rotatedY + transY;
+
+                            nextPoints.push(controlledPt);
+                        }
+                    }
+                    points = nextPoints;
+                }
+
+                p.push();
+                p.translate(p.width / 2, p.height / 2);
+                for (const pt of points) {
+                    p.point(pt.x * p.width, pt.y * p.height);
+                }
+                p.pop();
+            };
+        };
+        new p5(sketch);
+    </script>
+</body>
+</html>
