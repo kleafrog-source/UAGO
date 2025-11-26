@@ -42,6 +42,7 @@ def save_config(config: Dict[str, Any], config_path: str = "config.json"):
 def save_phase_data(phase_num: int, data: Dict[str, Any], output_dir: str = "output") -> str:
     os.makedirs(output_dir, exist_ok=True)
 
+    # Use filesystem-safe timestamp format (no colons)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"phase{phase_num}_{timestamp}.json"
     filepath = os.path.join(output_dir, filename)
