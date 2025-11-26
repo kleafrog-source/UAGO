@@ -9,6 +9,7 @@ import os
 import logging
 from typing import Dict, Any, Optional
 from pathlib import Path
+from datetime import datetime
 import base64
 
 logger = logging.getLogger("UAGO.Visualizer")
@@ -35,31 +36,20 @@ class UAGOVisualizer:
         self.static_dir = Path(__file__).parent / "static"
         self.static_dir.mkdir(exist_ok=True)
 
-    def generate_visualization(self, uago_data: Dict[str, Any]) -> str:
-        """
-        Generate a visualization from UAGO output data.
-        
-        Args:
-            uago_data: Dictionary containing UAGO analysis results
-            
-        Returns:
-            Path to the generated HTML visualization file
-        """
+    def generate_visualization(self, uago_data: Dict) -> str:
+        """Generate and save visualization HTML file with a filesystem-safe name."""
+        # Generate a filesystem-safe timestamp (no colons)
+        safe_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"visualization_{safe_timestamp}.html"
+        output_path = self.output_dir / filename
+    
         try:
-            # Prepare data for the visualization
-            vis_data = self._prepare_visualization_data(uago_data)
-            
-            # Generate the visualization HTML
-            html_content = self._generate_html(vis_data)
-            
-            # Save the visualization
-            output_file = self.output_dir / f"visualization_{uago_data.get('timestamp', '')}.html"
-            output_file.write_text(html_content, encoding='utf-8')
-            
-            return str(output_file)
-            
+            html_content = self._generate_html(uago_data)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            return str(output_path)
         except Exception as e:
-            logger.error(f"Error generating visualization: {str(e)}")
+            logging.error(f"Error saving visualization: {e}")
             raise
     
     def _prepare_visualization_data(self, uago_data: Dict[str, Any]) -> Dict[str, Any]:
