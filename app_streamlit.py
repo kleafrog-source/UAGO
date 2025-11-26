@@ -204,12 +204,10 @@ def load_project(project_name: str) -> Optional[Dict]:
 
 # Import visualization components
 try:
-    from visualizer.visualization import UAGOVisualizer
-    from visualizer.ai_interpreter import AIVisualizationInterpreter
+    from visualizer.uago_viz import render_model
     VISUALIZATION_ENABLED = True
 except ImportError:
     VISUALIZATION_ENABLED = False
-    st.warning("Visualization module not available. Some features may be limited.")
 
 # Page configuration
 st.set_page_config(
@@ -585,68 +583,6 @@ with tab1:
             st.info("No logs yet. Process an input to see logs.")
 
 with tab2:
-    st.header("Results & Analysis")
-    
-    # Add visualization tab if available
-    if VISUALIZATION_ENABLED and st.session_state.cycle_data:
-        if st.button("✨ Generate 3D Visualization"):
-            with st.spinner("Generating interactive visualization..."):
-                try:
-                    def get_visualizer():
-                        """Get a visualizer instance with the current project's output directory."""
-                        project_name = st.session_state.get('current_project')
-                        return UAGOVisualizer(project_name=project_name)
-
-                    try:
-                        # Get a fresh visualizer instance with current project context
-                        current_visualizer = get_visualizer()
-                        html_path = current_visualizer.generate_visualization(st.session_state.cycle_data)
-                        
-                        # Read and store the HTML content
-                        with open(html_path, 'r', encoding='utf-8') as f:
-                            html_content = f.read()
-                        
-                        # Encode the HTML for embedding
-                        b64_html = base64.b64encode(html_content.encode()).decode()
-                        
-                        # Store in session state
-                        st.session_state.visualization_html = b64_html
-                        st.session_state.show_visualization = True
-                        
-                        # Log the location of the saved visualization
-                        add_log(f"Visualization saved to: {html_path}")
-                    except Exception as e:
-                        add_log(f"Error generating visualization: {str(e)}", "ERROR")
-                        st.error(f"Error generating visualization: {str(e)}")
-                        st.session_state.show_visualization = False
-                except Exception as e:
-                    st.error(f"Error generating visualization: {str(e)}")
-                    st.session_state.show_visualization = False
-        
-        # Show visualization if available
-        if st.session_state.show_visualization and st.session_state.visualization_html:
-            st.subheader("🎨 Interactive Visualization")
-            
-            # Display the visualization in an iframe
-            if st.session_state.visualization_html:
-                html = f"""
-                <div style="width: 100%; height: 600px; overflow: hidden;">
-                    <iframe src="data:text/html;base64,{st.session_state.visualization_html}" 
-                            style="width: 100%; height: 100%; border: none;">
-                    </iframe>
-                </div>
-                """
-                st.components.v1.html(html, height=600)
-            
-            # Add download button
-            st.download_button(
-                label="💾 Download Visualization",
-                data=base64.b64decode(st.session_state.visualization_html),
-                file_name=f"uago_visualization_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                mime="text/html"
-            )
-    
-    # Original content
     st.header("Analysis Results")
 
     if st.session_state.cycle_data:
@@ -711,6 +647,30 @@ with tab2:
                 st.write(f"**Validation Score:** {phase6.get('validation_score', 0):.2%}")
 
         with phase_tabs[8]:
+            st.subheader("💾 Export & Visualization")
+
+            if VISUALIZATION_ENABLED:
+                st.markdown("#### 🎨 Interactive Visualization")
+                if st.button("Generate Visualization"):
+                    with st.spinner("Generating visualization..."):
+                        try:
+                            viz_html = render_model(st.session_state.cycle_data)
+                            st.session_state.visualization_html = viz_html
+                        except Exception as e:
+                            st.error(f"Failed to generate visualization: {e}")
+                            st.session_state.visualization_html = None
+
+                if st.session_state.get("visualization_html"):
+                    st.components.v1.html(st.session_state.visualization_html, height=620)
+                    st.download_button(
+                        label="Download Visualization",
+                        data=st.session_state.visualization_html,
+                        file_name="uago_visualization.html",
+                        mime="text/html",
+                    )
+                st.markdown("---")
+
+
             st.subheader("💾 Export Options")
 
             col1, col2, col3 = st.columns(3)
