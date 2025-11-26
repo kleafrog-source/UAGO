@@ -346,7 +346,7 @@ with tab2:
                             )
 
             with col3:
-                st.markdown("#### Export as JSON")
+                st.markdown("Export as JSON")
                 json_str = json.dumps(cycle, indent=2)
                 st.download_button(
                     "Download Cycle JSON",
@@ -355,16 +355,37 @@ with tab2:
                     mime="application/json"
                 )
 
-            st.markdown("#### Debug Information")
+            st.markdown("Debug Information")
             with st.expander("View Raw Cycle Data"):
                 st.json(cycle)
 
-    else:
-        st.info("No results yet. Process an input in the 'Process Input' tab to see results here.")
+            if 'mistral_logs' in cycle and cycle['mistral_logs']:
+                with st.expander("Mistral API Logs (Prompts/Responses)"):
+                    for log in cycle['mistral_logs']:
+                        st.subheader(f"Phase {log['phase']} Iter {log.get('iteration', 1)}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.text_area("Prompt", log['prompt'], height=100, key=f"prompt_{len(log['prompt'])}")
+                        with col2:
+                            st.text_area("Response", log['response'], height=100, key=f"resp_{len(log['response'])}")
+                        st.json(log['parsed'])  # Parsed output
+                        # Simple copy button (shows code in Streamlit; for clipboard, use st.download_button below)
+                        if st.button("Copy Prompt", key=f"copy_{len(log['prompt'])}"):
+                            st.code(log['prompt'])
+                        # Optional: Download prompt as txt
+                        st.download_button(
+                            "Download Prompt TXT",
+                            data=log['prompt'],
+                            file_name=f"prompt_phase{log['phase']}_iter{log.get('iteration',1)}.txt",
+                            mime="text/plain",
+                            key=f"dl_prompt_{len(log['prompt'])}"
+                        )
+            else:
+                st.info("No Mistral logs available (demo mode or no API calls).")
 
-st.markdown("---")
-st.markdown(
-    "<div style='text-align: center; color: gray;'>UAGO v1.0 | "
-    "Universal Adaptive Geometric Observer | Autonomous Mathematical Structure Discovery</div>",
-    unsafe_allow_html=True
-)
+        st.markdown("---")
+        st.markdown(
+            "<div style='text-align: center; color: gray;'>UAGO v1.0 | "
+            "Universal Adaptive Geometric Observer | Autonomous Mathematical Structure Discovery</div>",
+            unsafe_allow_html=True
+        )

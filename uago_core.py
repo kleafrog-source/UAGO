@@ -95,7 +95,7 @@ class UAGOCore:
             gray_roi = gray
         _, binary = cv2.threshold(gray_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        coeffs = pywt.wavedec2(gray_roi, 'db1', levels=3)
+        coeffs = pywt.wavedec2(gray_roi, 'db1', level=3)
         scales = [np.std(c[1]) for c in coeffs]
         scales = sorted([float(s) for s in scales if s > 0])[:4]
         

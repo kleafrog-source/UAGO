@@ -63,6 +63,10 @@ Rejection of pre-defined object ontologies in favor of pure geometric, topologic
 pip install -r requirements.txt
 ```
 
+```bash
+pip install ptwt
+```
+
 3. (Optional) Obtain a Mistral API key from [Mistral AI](https://mistral.ai)
 
 ## Usage
