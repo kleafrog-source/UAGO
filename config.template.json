@@ -1,0 +1,8 @@
+{
+  "api_key": "",
+  "demo_mode": false,
+  "default_frame_skip": 30,
+  "log_level": "INFO",
+  "output_directory": "output",
+  "max_image_dimension": 1024
+}

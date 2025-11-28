@@ -1,0 +1,11 @@
+{
+  "model": "tiling",
+  "latex_formula": "p4m: \\mathbb{Z}^2 \\rtimes D_8",
+  "parameters": {
+    "period": 180.86944314399682
+  },
+  "planned_steps": [
+    "Validate dim",
+    "Simulate 3 iter"
+  ]
+}

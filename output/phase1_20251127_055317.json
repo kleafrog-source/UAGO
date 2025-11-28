@@ -1,0 +1,11 @@
+{
+  "roi": {
+    "x": 85,
+    "y": 47,
+    "width": 215,
+    "height": 184
+  },
+  "structure_detected": true,
+  "complexity_score": 1.0,
+  "contour_points": 3711
+}

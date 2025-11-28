@@ -1,0 +1,17 @@
+{
+  "name": "first",
+  "last_modified": "2025-11-27T05:42:45.756691",
+  "version": "1.0.0",
+  "directories": {
+    "output": "projects\\first\\output",
+    "logs": "projects\\first\\logs",
+    "prompts": "projects\\first\\prompts",
+    "debug": "projects\\first\\debug"
+  },
+  "files": {
+    "cycle_data": "cycle_data.json"
+  },
+  "created_at": "2025-11-27T05:34:28.885572",
+  "description": "UAGO Project",
+  "cycle_data": null
+}

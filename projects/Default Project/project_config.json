@@ -1,0 +1,17 @@
+{
+  "name": "Default Project",
+  "last_modified": "2025-11-27T05:52:38.287585",
+  "version": "1.0.0",
+  "directories": {
+    "output": "projects\\Default Project\\output",
+    "logs": "projects\\Default Project\\logs",
+    "prompts": "projects\\Default Project\\prompts",
+    "debug": "projects\\Default Project\\debug"
+  },
+  "files": {
+    "cycle_data": "cycle_data.json"
+  },
+  "created_at": "2025-11-27T00:16:00.702871",
+  "description": "Default project with example data",
+  "cycle_data": null
+}

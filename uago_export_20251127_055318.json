@@ -1,0 +1,89 @@
+{
+  "timestamp": "2025-11-27T05:52:56.820479",
+  "input_shape": [
+    300,
+    300,
+    3
+  ],
+  "phases": {
+    "phase1": {
+      "roi": {
+        "x": 85,
+        "y": 47,
+        "width": 215,
+        "height": 184
+      },
+      "structure_detected": true,
+      "complexity_score": 1.0,
+      "contour_points": 3711
+    },
+    "phase2": {
+      "dimensionality": 2.0,
+      "scales": [
+        44.40798610734044,
+        48.68757001231601,
+        49.023017566453966,
+        49.106709170536064
+      ],
+      "connectivity": "low",
+      "repetition": true,
+      "symmetry": "approximate rotational",
+      "hu_moments": [
+        0.0013076732031295669,
+        4.2721386084564474e-08,
+        1.236996971553706e-13
+      ]
+    },
+    "phase3": {
+      "hypotheses": [
+        {
+          "id": "H2",
+          "desc": "Periodic tiling or self-similar recursion",
+          "priority": 0.85
+        },
+        {
+          "id": "H3",
+          "desc": "Discrete group rotational",
+          "priority": 0.8
+        }
+      ]
+    },
+    "phase4": {
+      "measurements_requested": [
+        "scale_ratios",
+        "hausdorff_dim"
+      ],
+      "measured_values": {
+        "scale_ratios": [
+          1.1,
+          1.01,
+          1.0
+        ],
+        "hausdorff_dim": 2.0
+      }
+    },
+    "phase5": {
+      "model": "tiling",
+      "latex_formula": "p4m: \\mathbb{Z}^2 \\rtimes D_8",
+      "parameters": {
+        "period": 49.106709170536064
+      },
+      "planned_steps": [
+        "Verify tiling dim=2.00",
+        "Perturb params"
+      ]
+    },
+    "phase6": {
+      "predictions": [],
+      "validation_score": 0.8719734497341317,
+      "refinement_needed": false,
+      "refinements_performed": 0
+    },
+    "phase7": {
+      "next_scale": "Verify tiling dim=2.00",
+      "context_shift": "Perturb params",
+      "cycle_complete": true
+    }
+  },
+  "mistral_logs": []
+}

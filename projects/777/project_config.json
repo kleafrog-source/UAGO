@@ -1,0 +1,17 @@
+{
+  "name": "777",
+  "last_modified": "2025-11-28T19:57:19.392379",
+  "version": "1.0.0",
+  "directories": {
+    "output": "projects\\777\\output",
+    "logs": "projects\\777\\logs",
+    "prompts": "projects\\777\\prompts",
+    "debug": "projects\\777\\debug"
+  },
+  "files": {
+    "cycle_data": "cycle_data.json"
+  },
+  "created_at": "2025-11-28T19:45:35.151490",
+  "description": "UAGO Project",
+  "cycle_data": null
+}
