@@ -129,15 +129,23 @@ def mistral_transform(json_data: Dict[str, Any], api_key: str) -> Tuple[Optional
     formula = phase5.get("formula", "N/A")
     parameters = json.dumps(phase5.get("parameters", {}))
 
+    # Whitelist of safe built-in functions
+    safe_builtins = {
+        "range": range, "len": len, "list": list, "dict": dict,
+        "float": float, "int": int, "str": str, "abs": abs,
+        "min": min, "max": max, "sum": sum, "zip": zip,
+    }
+
     prompt = (
         f"Generate Plotly Python code for the following mathematical model:\n"
         f"Model: {model}\n"
         f"Formula: {formula}\n"
         f"Parameters: {parameters}\n"
-        f"The code should create a Plotly figure object named 'fig'. "
-        f"You have the following modules available: `go` (plotly.graph_objects), `np` (numpy), and `json`. "
-        f"Do not include any `import` statements in the code."
-        f"Ensure the output is a single Python code block enclosed in ```python...```."
+        f"Create a Plotly figure object named 'fig'. Do not include `import` statements. "
+        f"You have access to `go` (plotly.graph_objects), `np` (numpy), `json`, and the following safe built-ins: "
+        f"{', '.join(safe_builtins.keys())}. "
+        f"Prefer list comprehensions over complex loops where possible. "
+        f"Output ONLY a single Python code block enclosed in ```python...```."
     )
     log_entry["prompt"] = prompt
 
@@ -153,14 +161,17 @@ def mistral_transform(json_data: Dict[str, Any], api_key: str) -> Tuple[Optional
         log_entry["response"] = content
 
         code_match = re.search(r'```python\s*(.*?)\s*```', content, re.DOTALL)
-        if code_match:
-            code = code_match.group(1).strip()
+        if not code_match:
+            log_entry["error"] = "No Python code block found in Mistral's response."
+            return _create_fallback_fig(phase5.get("parameters", {}), model), log_entry
 
+        code = code_match.group(1).strip()
+
+        # Execute the code in a restricted environment
+        try:
             restricted_globals = {
-                "__builtins__": {},
-                "go": go,
-                "np": np,
-                "json": json,
+                "__builtins__": safe_builtins,
+                "go": go, "np": np, "json": json,
             }
             local_vars = {}
             exec(code, restricted_globals, local_vars)
@@ -169,13 +180,14 @@ def mistral_transform(json_data: Dict[str, Any], api_key: str) -> Tuple[Optional
             if isinstance(fig, go.Figure):
                 return fig, log_entry
             else:
-                log_entry["error"] = "Executed code did not produce a Plotly Figure."
-                return None, log_entry
-        else:
-            log_entry["error"] = "No Python code block found in Mistral's response."
-            return None, log_entry
+                log_entry["error"] = "Executed code did not produce a valid Plotly Figure."
+                return _create_fallback_fig(phase5.get("parameters", {}), model), log_entry
+        except Exception as e:
+            logging.error(f"Exec of Mistral code failed: {e}")
+            log_entry["error"] = f"Execution failed: {e}. Using fallback."
+            return _create_fallback_fig(phase5.get("parameters", {}), model), log_entry
 
     except Exception as e:
-        logging.error(f"Mistral transform failed: {e}")
-        log_entry["error"] = f"Mistral API call or code execution failed: {e}"
-        return None, log_entry
+        logging.error(f"Mistral API call failed: {e}")
+        log_entry["error"] = f"Mistral API call failed: {e}. Using fallback."
+        return _create_fallback_fig(phase5.get("parameters", {}), model), log_entry

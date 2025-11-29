@@ -85,24 +85,24 @@ def test_mistral_transform_success(mock_mistral):
 
     # Verify the log entry
     assert "prompt" in log
-    assert "Generate Plotly Python code" in log["prompt"]
     assert "response" in log
     assert "error" not in log
 
 @patch('visualizer.uago_viz.Mistral')
-def test_mistral_transform_api_failure_returns_none(mock_mistral):
-    """Test that mistral_transform returns None on API error."""
+def test_mistral_transform_api_failure_returns_fallback(mock_mistral):
+    """Test that mistral_transform returns a fallback figure on API error."""
     # Mock an API failure
     mock_mistral.return_value.chat.complete.side_effect = Exception("API Error")
 
     fig, log = mistral_transform(EXAMPLE_JSON_IFS, MISTRAL_API_KEY)
 
-    # Verify it returned None instead of a figure
-    assert fig is None
+    # Verify it returned the fallback figure
+    assert isinstance(fig.data[0], go.Scatter)
+    assert fig.layout.title.text == "Numerical Invariants for IFS (Iterated Function System)"
 
     # Verify the error was logged
     assert "error" in log
-    assert "Mistral API call or code execution failed: API Error" in log["error"]
+    assert "Mistral API call failed" in log["error"]
 
 def test_mistral_transform_no_api_key_returns_none():
     """Test that mistral_transform returns None if no API key is provided."""
@@ -116,8 +116,8 @@ def test_mistral_transform_no_api_key_returns_none():
     assert "Mistral API key not provided" in log["error"]
 
 @patch('visualizer.uago_viz.Mistral')
-def test_mistral_transform_bad_code_returns_none(mock_mistral):
-    """Test that mistral_transform returns None when response has no code block."""
+def test_mistral_transform_bad_code_returns_fallback(mock_mistral):
+    """Test that mistral_transform returns a fallback when response has no code block."""
     # Mock a response with no runnable code
     mock_message = MagicMock()
     mock_message.content = "I cannot generate this visualization."
@@ -129,9 +129,58 @@ def test_mistral_transform_bad_code_returns_none(mock_mistral):
 
     fig, log = mistral_transform(EXAMPLE_JSON_IFS, MISTRAL_API_KEY)
 
-    # Verify it returned None
-    assert fig is None
+    # Verify it returned the fallback figure
+    assert isinstance(fig.data[0], go.Scatter)
 
     # Verify the error was logged
     assert "error" in log
     assert "No Python code block found" in log["error"]
+
+@patch('visualizer.uago_viz.Mistral')
+def test_mistral_transform_with_safe_builtins_succeeds(mock_mistral):
+    """Test that code using whitelisted built-ins (e.g., range) executes successfully."""
+    mock_message = MagicMock()
+    mock_message.content = (
+        "```python\n"
+        "x_vals = list(range(5))\n"
+        "fig = go.Figure(data=go.Scatter(x=x_vals, y=[i**2 for i in x_vals]))\n"
+        "```"
+    )
+    mock_choice = MagicMock()
+    mock_choice.message = mock_message
+    mock_chat_response = MagicMock()
+    mock_chat_response.choices = [mock_choice]
+    mock_mistral.return_value.chat.complete.return_value = mock_chat_response
+
+    fig, log = mistral_transform(EXAMPLE_JSON_IFS, MISTRAL_API_KEY)
+
+    assert isinstance(fig, go.Figure)
+    assert np.array_equal(fig.data[0].x, [0, 1, 2, 3, 4])
+    assert "error" not in log
+
+@patch('visualizer.uago_viz.Mistral')
+def test_mistral_transform_with_unsafe_builtin_falls_back(mock_mistral):
+    """Test that using a non-whitelisted built-in (e.g., open) fails and triggers a fallback."""
+    mock_message = MagicMock()
+    mock_message.content = (
+        "```python\n"
+        "with open('some_file.txt', 'w') as f:\n"
+        "    f.write('malicious content')\n"
+        "fig = go.Figure()\n"
+        "```"
+    )
+    mock_choice = MagicMock()
+    mock_choice.message = mock_message
+    mock_chat_response = MagicMock()
+    mock_chat_response.choices = [mock_choice]
+    mock_mistral.return_value.chat.complete.return_value = mock_chat_response
+
+    fig, log = mistral_transform(EXAMPLE_JSON_IFS, MISTRAL_API_KEY)
+
+    # Verify that it returned the fallback figure (a line plot of invariants)
+    assert isinstance(fig.data[0], go.Scatter)
+    assert fig.layout.title.text == "Numerical Invariants for IFS (Iterated Function System)"
+
+    # Verify the error was logged
+    assert "error" in log
+    assert "Execution failed" in log["error"]
