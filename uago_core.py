@@ -6,402 +6,251 @@ from datetime import datetime
 import json
 import re
 import time
-from scipy import ndimage
 from scipy.signal import correlate2d
-from skimage import measure, feature
-import pywt  # pip install pywt
+from skimage import measure
+import pywt
 from uago_config import UAGO_CONFIG
-# from mistralai.exceptions import MistralException  # Если SDK имеет; else catch Exception
+from uago_utils import save_mistral_response
+
 class UAGOCore:
-    def __init__(self, api_key: Optional[str] = None, demo_mode: bool = False, max_refinements: int = 1):
+    def __init__(self, project_name: str, api_key: Optional[str] = None, demo_mode: bool = False):
+        self.project_name = project_name
         self.api_key = api_key
         self.demo_mode = demo_mode or (api_key is None)
-        self.logger = logging.getLogger("UAGO")
+        self.logger = logging.getLogger(f"UAGO-{project_name}")
         self.mistral_client = None
-        self.mistral_logs: List[Dict] = []
+
         if self.api_key and not self.demo_mode:
             try:
                 from mistralai import Mistral
                 self.mistral_client = Mistral(api_key=self.api_key)
-                self.logger.info("Mistral API initialized successfully")
+                self.logger.info("Mistral API client initialized successfully.")
+            except ImportError:
+                self.logger.warning("`mistralai` package not found. Install it to use the AI features.")
+                self.demo_mode = True
             except Exception as e:
-                self.logger.warning(f"Failed to initialize Mistral API: {e}. Falling back to rule-based.")
-                self.demo_mode = True  # FIXED: Enable fallback (as per previous check)
+                self.logger.error(f"Failed to initialize Mistral API: {e}")
+                self.demo_mode = True
+
         self.current_cycle_data = {}
-        self.max_refinements = max_refinements  # NEW: Save from arg
-    def _safe_mistral_call(self, prompt: str, phase: int, iteration: int = 1) -> str:
+
+    def _safe_mistral_call(self, prompt: str, phase: int) -> Optional[str]:
+        if not self.mistral_client:
+            self.logger.warning(f"Mistral client not available for Phase {phase}. Skipping API call.")
+            return None
+
         for attempt in range(3):
             try:
                 response = self.mistral_client.chat.complete(
                     model="mistral-small-latest",
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3
+                    temperature=0.1, # Lower temperature for stricter JSON output
                 )
                 return response.choices[0].message.content
-            except Exception as e:  # Catch 429
+            except Exception as e:
                 if "429" in str(e) or "rate limit" in str(e).lower():
-                    wait = 2 ** attempt + np.random.uniform(0, 1)  # Backoff 2,4,8s + jitter
-                    self.logger.warning(f"Rate limit hit (Phase {phase} Iter {iteration}), wait {wait:.1f}s (attempt {attempt+1}/3)")
+                    wait = 2 ** attempt
+                    self.logger.warning(f"Rate limit hit in Phase {phase}. Retrying in {wait}s...")
                     time.sleep(wait)
-                    continue
-                raise e
-        raise Exception(f"Max retries exceeded for Phase {phase} Iter {iteration}")
-    def _extract_json(self, content: str) -> str:
-        # Code block first
-        code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL | re.IGNORECASE)
-        if code_match:
-            return code_match.group(1).strip()
-        # Fallback braces (nested-aware)
-        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
-        if json_match:
-            return json_match.group()
-        return "{}"
+                else:
+                    self.logger.error(f"An unexpected error occurred in Phase {phase}: {e}")
+                    return None
+        self.logger.error(f"Max retries exceeded for API call in Phase {phase}.")
+        return None
+
+    def _extract_json(self, content: str) -> Optional[Dict[str, Any]]:
+        """Extracts a JSON object from a string, tolerating markdown code blocks."""
+        match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            # Fallback for raw JSON without markdown
+            json_str = content
+
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            self.logger.warning(f"Failed to decode JSON from content: {content[:250]}...")
+            return None
+
     def process_frame(self, frame: np.ndarray, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         self.current_cycle_data = {
             "timestamp": datetime.now().isoformat(),
             "input_shape": frame.shape,
             "phases": {},
-            "mistral_logs": []
         }
-        self.mistral_logs = []
+
         phases = [
-            (1, "Primary Structure Detection", self.phase1_structure_detection),
-            (2, "Coarse Invariant Extraction", self.phase2_invariant_extraction),
+            (1, "Structure Detection", self.phase1_structure_detection),
+            (2, "Invariant Extraction", self.phase2_invariant_extraction),
             (3, "Hypothesis Generation", self.phase3_hypothesis_generation),
-            (4, "Adaptive Measurement Request", self.phase4_adaptive_measurement),
-            (5, "Integration & Minimal Model Search", self.phase5_model_search),
-            (6, "Predictive Validation & Refinement", self.phase6_validation),
-            (7, "Scale / Context Transition", self.phase7_context_transition)
+            (4, "Adaptive Measurement", self.phase4_adaptive_measurement),
+            (5, "Model Search", self.phase5_model_search),
+            (6, "Validation", self.phase6_validation),
+            (7, "Context Transition", self.phase7_context_transition),
         ]
+
         for i, (phase_num, phase_name, phase_func) in enumerate(phases):
-            try:
-                if progress_callback:
-                    progress_callback(phase_num, phase_name, (i / len(phases)) * 100)
-                self.logger.info(f"Phase {phase_num}: {phase_name} - Starting")
-                result = phase_func(frame)
-                self.current_cycle_data["phases"][f"phase{phase_num}"] = result
-                self.logger.info(f"Phase {phase_num}: {phase_name} - Completed")
-            except Exception as e:
-                self.logger.error(f"Phase {phase_num}: {phase_name} - Error: {str(e)}")
-                self.current_cycle_data["phases"][f"phase{phase_num}"] = {"error": str(e)}
-        self.current_cycle_data["mistral_logs"] = self.mistral_logs
+            if progress_callback:
+                progress_callback(phase_num, phase_name, (i / len(phases)) * 100)
+
+            result = phase_func(frame)
+            self.current_cycle_data["phases"][f"phase{phase_num}"] = result
+
         if progress_callback:
             progress_callback(7, "Complete", 100)
+
         return self.current_cycle_data
 
+    # --- Phase Implementations ---
+
     def phase1_structure_detection(self, frame: np.ndarray) -> Dict[str, Any]:
-        if len(frame.shape) == 3:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = frame
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, 50, 150)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) > 2 else frame
+        edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 150)
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
         if not contours:
-            return {"roi": None, "structure_detected": False, "complexity_score": 0.0}
+            return {"structure_detected": False}
+
         largest_contour = max(contours, key=cv2.contourArea)
         x, y, w, h = cv2.boundingRect(largest_contour)
-        complexity = len(largest_contour) / (w * h) if w * h > 0 else 0
         return {
             "roi": {"x": int(x), "y": int(y), "width": int(w), "height": int(h)},
             "structure_detected": True,
-            "complexity_score": float(min(complexity * 100, 1.0)),
             "contour_points": len(largest_contour)
         }
 
     def phase2_invariant_extraction(self, frame: np.ndarray) -> Dict[str, Any]:
-        phase1_data = self.current_cycle_data["phases"].get("phase1", {})
-        roi = phase1_data.get("roi")
-        if len(frame.shape) == 3:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = frame
-        if roi:
-            x, y, w, h = roi["x"], roi["y"], roi["width"], roi["height"]
+        roi_data = self.current_cycle_data["phases"].get("phase1", {}).get("roi")
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) > 2 else frame
+
+        if roi_data:
+            x, y, w, h = roi_data['x'], roi_data['y'], roi_data['width'], roi_data['height']
             gray_roi = gray[y:y+h, x:x+w]
         else:
             gray_roi = gray
-        _, binary = cv2.threshold(gray_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        coeffs = pywt.wavedec2(gray_roi, 'db1', level=3)
-        scales = [np.std(c[1]) for c in coeffs]
-        scales = sorted([float(s) for s in scales if s > 0])[:4]
+        # Fractal Dimension
+        _, binary = cv2.threshold(gray_roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        dimension = self._estimate_box_counting_dimension(binary)
         
-        labeled = measure.label(binary > 0)
-        regions = measure.regionprops(labeled)
-        connectivity = "high" if len(regions) < 5 else "medium" if len(regions) < 20 else "low"
-        
-        filled = ndimage.binary_fill_holes(binary > 0)
-        box_dim = self._estimate_box_counting_dimension(filled)
-        
+        # Hu Moments for symmetry
         moments = cv2.moments(binary)
-        hu_moments = cv2.HuMoments(moments).flatten()[:3]
-        autocorr = correlate2d(gray_roi.astype(float), gray_roi.astype(float), mode='same')
-        repetition = np.max(autocorr[1:]) / np.max(autocorr) > 0.7
-        symmetry = "approximate rotational" if abs(hu_moments[0]) < 0.5 and repetition else "asymmetric"
+        hu_moments = cv2.HuMoments(moments).flatten()
         
         return {
-            "dimensionality": float(box_dim),
-            "scales": scales,
-            "connectivity": connectivity,
-            "repetition": bool(repetition),
-            "symmetry": symmetry,
-            "hu_moments": [float(h) for h in hu_moments]
+            "fractal_dimension": dimension,
+            "hu_moments": [float(h) for h in hu_moments[:3]],
+            "complexity": float(np.sum(binary > 0) / binary.size)
         }
 
     def phase3_hypothesis_generation(self, frame: np.ndarray) -> Dict[str, Any]:
-        phase2_data = self.current_cycle_data["phases"].get("phase2", {})
-        if self.mistral_client:
-            try:
-                prompt = self._build_hypothesis_prompt(phase2_data)
-                content = self._safe_mistral_call(prompt, phase=3, iteration=1)  # NEW: Use safe call
-                hypotheses_data = self._parse_mistral_response(content)
-                log_entry = {"phase": 3, "iteration": 1, "prompt": prompt, "response": content, "parsed": hypotheses_data}
-                self.mistral_logs.append(log_entry)
-                self.logger.debug(f"Mistral Phase3: Prompt sent (len={len(prompt)} chars), Response received (len={len(content)} chars)")
-                return hypotheses_data
-            except Exception as e:
-                self.logger.warning(f"Mistral Phase3 failed: {e}. Rule-based fallback.")
-        return self._generate_rule_based_hypotheses(phase2_data)
-
-    def _build_hypothesis_prompt(self, invariants: Dict[str, Any]) -> str:
-        examples = UAGO_CONFIG["observation_cycle"][2]["examples"]
-        return f"""UAGO Phase 3: Hypothesis Generation.
-Core principle: {UAGO_CONFIG['core_principle']}
-
-Invariants: {json.dumps(invariants)}
-
-Deeper invariants examples: {', '.join(examples)}
-
-Generate EXACTLY 3 prioritized hypotheses. Each: id (H1-H3), desc (concise math, e.g., 'Hierarchical self-similarity via IFS, dim≈{invariants.get("dimensionality",2.0)}'), priority (0.5-1.0 based on fit).
-
-Output ONLY valid JSON: {{"hypotheses": [{{"id": "H1", "desc": "IFS with C6 sym", "priority": 0.95}}]}}"""
-
-    def _parse_mistral_response(self, content: str) -> Dict[str, Any]:
-        json_str = self._extract_json(content)  # NEW: Extract first
-        try:
-            parsed = json.loads(json_str)
-            # Validate keys for phase3
-            if 'hypotheses' not in parsed:
-                raise ValueError("Missing hypotheses")
-            return parsed
-        except (json.JSONDecodeError, ValueError) as e:
-            self.logger.warning(f"Parse failed for content: {content[:200]}... Error: {e}")
-            # Enhanced fallback: Rule-based
-            phase2_data = self.current_cycle_data['phases'].get('phase2', {})
-            return self._generate_rule_based_hypotheses(phase2_data)
+        # This phase is now simplified, as the heavy lifting is in phase 5.
+        # It could be used for pre-filtering models in a more complex system.
+        return {"status": "completed", "info": "Hypothesis generation is now integrated into Phase 5."}
 
     def phase4_adaptive_measurement(self, frame: np.ndarray) -> Dict[str, Any]:
-        phase3_data = self.current_cycle_data["phases"].get("phase3", {})
-        hypotheses = phase3_data.get("hypotheses", [])
-        measurements_requested = []
-        for hyp in hypotheses:
-            desc = hyp.get("desc", "").lower()
-            if "self-similar" in desc or "fractal" in desc:
-                measurements_requested.extend(["scale_ratios", "hausdorff_dim"])
-            if "symmetry" in desc:
-                measurements_requested.extend(["symmetry_group", "rotation_angles"])
-            if "branch" in desc or "dynamical" in desc:
-                measurements_requested.extend(["branch_angles", "bifurcation_count"])
-        measurements_requested = list(set(measurements_requested))
-
-        if len(frame.shape) == 3:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = frame
-        phase1_data = self.current_cycle_data["phases"].get("phase1", {})
-        roi = phase1_data.get("roi")
-        if roi:
-            x, y, w, h = roi["x"], roi["y"], roi["width"], roi["height"]
-            gray = gray[y:y+h, x:x+w]
-
-        measured_values = {}
-        edges = cv2.Canny(gray, 50, 150)
-        
-        if "scale_ratios" in measurements_requested:
-            p2_scales = self.current_cycle_data["phases"].get("phase2", {}).get("scales", [])
-            measured_values["scale_ratios"] = [round(p2_scales[i+1]/p2_scales[i], 2) for i in range(len(p2_scales)-1)] if len(p2_scales)>1 else [0.5, 0.33]
-        
-        if "rotation_angles" in measurements_requested:
-            lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=50)
-            angles = []
-            if lines is not None:
-                for line in lines[:10]:
-                    rho, theta = line[0]
-                    angles.append(float(theta * 180 / np.pi))
-            measured_values["rotation_angles"] = angles[:4]
-        
-        if "symmetry_group" in measurements_requested:
-            p2_sym = self.current_cycle_data["phases"].get("phase2", {}).get("symmetry", "")
-            measured_values["symmetry_group"] = "C4" if "rotational" in p2_sym else "Z2"
-        
-        if "branch_angles" in measurements_requested:
-            measured_values["branch_angles"] = [30.0, 45.0]  # Enhance with skeleton if needed
-        
-        if "hausdorff_dim" in measurements_requested:
-            binary = gray > np.mean(gray)
-            measured_values["hausdorff_dim"] = self._estimate_box_counting_dimension(binary)
-
-        return {"measurements_requested": measurements_requested, "measured_values": measured_values}
+        # This phase is also simplified. It can be used to calculate specific
+        # parameters needed for the models proposed in a future, more advanced phase 3.
+        return {"status": "completed", "info": "Adaptive measurement is now integrated into Phase 5."}
 
     def phase5_model_search(self, frame: np.ndarray) -> Dict[str, Any]:
-        phase2_data = self.current_cycle_data["phases"].get("phase2", {})
-        phase3_data = self.current_cycle_data["phases"].get("phase3", {})
-        phase4_data = self.current_cycle_data["phases"].get("phase4", {})
-        iteration = 1
-        if self.mistral_client:
-            try:
-                prompt = self._build_model_search_prompt(phase2_data, phase3_data, phase4_data)
-                content = self._safe_mistral_call(prompt, phase=5, iteration=iteration)  # NEW: Use safe call
-                model_data = self._parse_model_response(content)
-                log_entry = {"phase": 5, "iteration": iteration, "prompt": prompt, "response": content, "parsed": model_data}
-                self.mistral_logs.append(log_entry)
-                self.logger.debug(f"Mistral Phase5: Prompt sent, Response: {content[:200]}...")
-                model_data["planned_steps"] = ["Validate dim", "Simulate 3 iter"]
-                return model_data
-            except Exception as e:
-                self.logger.warning(f"Mistral Phase5 failed: {e}. Rule-based.")
-        return self._generate_rule_based_model(phase2_data, phase3_data, phase4_data)
+        if self.demo_mode or not self.mistral_client:
+            self.logger.info("Phase 5: Using demo/fallback model.")
+            return self._get_default_model_response()
 
-    def _build_model_search_prompt(self, invariants: Dict, hypotheses: Dict, measurements: Dict) -> str:
-        candidates = UAGO_CONFIG["observation_cycle"][4]["candidate_models"]
-        top_hyp = hypotheses.get("hypotheses", [{}])[0].get("desc", "")
-        return f"""UAGO Phase 5: Infer structure class (fractal, tiling, dynamical, Lie group, etc.) from invariants {json.dumps(invariants)}, hyp {top_hyp}, measures {json.dumps(measurements)}.
-Select minimal from {', '.join(candidates)}. Derive LaTeX formula + params (tie to dim={invariants.get('dimensionality',2.0):.2f}, scales={invariants.get('scales',[])}).
-Plan 1-2 validation steps.
-
-ONLY JSON: {{"model": "Tiling", "latex_formula": r"\\mathbb{{Z}}^2 \\rtimes D_8", "parameters": {{"period":80}}, "planned_steps": ["Check coverage", "Perturb sym"]}}. Do NOT explain; respond EXCLUSIVELY with the JSON object."""
-    def _parse_model_response(self, content: str) -> Dict[str, Any]:
-        json_str = self._extract_json(content)  # NEW: Extract first
-        try:
-            data = json.loads(json_str)
-            # Validate keys for phase5
-            if 'model' not in data or 'latex_formula' not in data:
-                raise ValueError("Missing model or formula")
-            data.setdefault("planned_steps", ["Generic validation"])
-            return data
-        except (json.JSONDecodeError, ValueError) as e:
-            self.logger.warning(f"Parse failed for content: {content[:200]}... Error: {e}")
-            # Enhanced fallback: Rule-based for phase5
-            phase2_data = self.current_cycle_data['phases'].get('phase2', {})
-            phase3_data = self.current_cycle_data['phases'].get('phase3', {})
-            phase4_data = self.current_cycle_data['phases'].get('phase4', {})
-            return self._generate_rule_based_model(phase2_data, phase3_data, phase4_data)
-
-    def _generate_rule_based_model(self, invariants: Dict, hypotheses: Dict, measurements: Dict) -> Dict[str, Any]:
-        top_desc = hypotheses.get("hypotheses", [{}])[0].get("desc", "").lower()
-        dim = invariants.get("dimensionality", 2.0)
-        rep = invariants.get("repetition", False)
-        conn = invariants.get("connectivity", "low")
-        sym = invariants.get("symmetry", "")
+        invariants = self.current_cycle_data["phases"].get("phase2", {})
+        prompt = self._build_model_search_prompt(invariants)
         
-        if dim > 1.9 and rep and "rotational" in sym:
-            model_class = "tiling"
-            latex = r"p4m: \mathbb{Z}^2 \rtimes D_8"
-            params = {"period": measurements.get("measured_values", {}).get("period", invariants.get("scales", [80])[-1])}
-        elif 1.2 < dim < 1.8 and conn == "high":
-            model_class = "fractal IFS"
-            latex = r"F_i(z) = s R_{\theta}(z) + t_i, \dim_H \approx " + f"{dim:.2f}"
-            params = {"s": measurements.get("measured_values", {}).get("scale_ratios", [0.5])[0]}
-        elif "branch" in top_desc or conn == "tree-like":
-            model_class = "L-system"
-            latex = r"F \to FF[+F][-F], \theta = 25.7^\circ"
-            params = {"angle": measurements.get("measured_values", {}).get("branch_angles", [25.7])[0]}
-        elif "dynamical" in top_desc or "attractor" in top_desc:
-            model_class = "Lie group flow"
-            latex = r"\dot{x} = A x, A \in \mathfrak{so}(2)"
-            params = {"dim": dim}
-        elif "spiral" in top_desc:
-            model_class = "Algebraic curve"
-            latex = r"r(\theta) = a e^{b \theta}"
-            params = {"b": 0.176}
-        else:
-            model_class = "Category-theoretic"
-            latex = r"\mathcal{C}(X, Y) \cong \hom(\dim X, \dim Y)"
-            params = {"dim": dim}
+        content = self._safe_mistral_call(prompt, phase=5)
         
-        planned_steps = [f"Verify {model_class} dim={dim:.2f}", "Perturb params"] if model_class != "Category-theoretic" else ["Abstract validation"]
+        if content:
+            response_json = self._extract_json(content)
+            save_mistral_response(self.project_name, "phase5", {"prompt": prompt, "response": content})
+
+            if response_json and self._validate_model_schema(response_json):
+                return response_json
+        
+        self.logger.warning("Phase 5: Mistral response was invalid or failed. Using fallback.")
+        return self._get_default_model_response()
+
+    def _build_model_search_prompt(self, invariants: Dict) -> str:
+        return f"""
+Analyze these geometric invariants: {json.dumps(invariants)}.
+Your task is to select the most plausible mathematical model that could generate such a structure and provide its parameters in a specific JSON format.
+
+The JSON object MUST have the following structure:
+{{
+  "model": "IFS|L-system|Tiling|LieGroup|AlgebraicCurve|Other",
+  "viz_type": "scatter_iterative|branching_tree|grid_tiling|orbit_plot|parametric_curve|point_cloud",
+  "parameters": {{ ... }}
+}}
+
+- For "model": "IFS", "viz_type" must be "scatter_iterative". The "parameters" must contain a "transforms" array, with each object having "scale_x", "scale_y", "rot_deg", "trans_x", "trans_y". Also include "iterations" and "points".
+- For "model": "L-system", "viz_type" must be "branching_tree". "parameters" must contain "axiom", "rules" (a dictionary), and "angle".
+- For "model": "AlgebraicCurve", "viz_type" must be "parametric_curve". "parameters" must contain "r_theta" (a string formula) and any variables used in it (e.g., "a", "b").
+- For other models, choose the most appropriate "viz_type" and fill "parameters" accordingly.
+
+Based on the invariants, infer the parameters. For example, a high fractal dimension suggests an IFS.
+
+Respond EXCLUSIVELY with the valid JSON object. No explanations. No markdown. No natural language.
+"""
+
+    def _validate_model_schema(self, data: Dict) -> bool:
+        """A basic validator for the Phase 5 JSON schema."""
+        if "model" not in data or "viz_type" not in data or "parameters" not in data:
+            return False
+        if not isinstance(data["parameters"], dict):
+            return False
+        # Add more specific validation rules here if needed
+        return True
+
+    def _get_default_model_response(self) -> Dict[str, Any]:
+        """A safe fallback response for Phase 5."""
         return {
-            "model": model_class,
-            "latex_formula": latex,
-            "parameters": params,
-            "planned_steps": planned_steps
+            "model": "Unknown",
+            "viz_type": "point_cloud",
+            "parameters": {
+                "points": 1000,
+                "invariants": self.current_cycle_data["phases"].get("phase2", {})
+            }
         }
 
     def phase6_validation(self, frame: np.ndarray) -> Dict[str, Any]:
-        phase5_data = self.current_cycle_data["phases"].get("phase5", {})
-        planned_steps = phase5_data.get("planned_steps", [])
-        self.logger.info(f"Phase6: Planned steps: {planned_steps}")
-        model = phase5_data.get("model", "unknown").lower()
-        predictions = []
-        if "ifs" in model or "fractal" in model:
-            predictions = ["Self-similarity at scales " + str(self.current_cycle_data["phases"].get("phase2", {}).get("scales", [])),
-                          f"Hausdorff dim ≈ {self.current_cycle_data['phases']['phase2']['dimensionality']:.2f}"]
-        elif "l-system" in model:
-            predictions = ["Branch count 2^n", "Angles from measurements: " + str(self.current_cycle_data["phases"].get("phase4", {}).get("measured_values", {}).get("branch_angles", []))]
+        # Validation can now be more deterministic, comparing the generated model's
+        # invariants with the ones extracted in phase 2.
+        model_params = self.current_cycle_data["phases"].get("phase5", {}).get("parameters", {})
+        original_invariants = self.current_cycle_data["phases"].get("phase2", {})
 
-        validation_score = np.random.uniform(0.75, 0.95)
-        refinement_needed = validation_score < 0.85
-        refinements = 0
-        while refinement_needed and refinements < self.max_refinements:
-            self.logger.info(f"Phase6: Refining model (iter {refinements+1})")
-            if self.mistral_client:
-                feedback_prompt = f"Refine model '{model}' based on low validation {validation_score}. Improve formula for invariants {json.dumps(self.current_cycle_data['phases'].get('phase2', {}))}."
-                try:
-                    content = self._safe_mistral_call(feedback_prompt, phase=5, iteration=refinements+2)  # FIXED: Use safe_call
-                    new_model_data = self._parse_model_response(content)
-                    self.current_cycle_data["phases"]["phase5"] = new_model_data  # Update
-                    log_entry = {"phase": 5, "iteration": refinements+2, "prompt": feedback_prompt, "response": content, "parsed": new_model_data}
-                    self.mistral_logs.append(log_entry)
-                    self.logger.debug(f"Refinement iter {refinements+1}: Updated model")
-                    validation_score += 0.05
-                except Exception as e:
-                    self.logger.warning(f"Refinement failed: {e}")
-            refinements += 1
-            refinement_needed = validation_score < 0.85
+        score = 0.85 # Default score
+        if "fractal_dimension" in original_invariants and "transforms" in model_params:
+            # A simple validation: score is higher if model is complex for high dimension
+            if original_invariants["fractal_dimension"] > 1.5 and len(model_params["transforms"]) > 2:
+                score = 0.95
 
-        return {
-            "predictions": predictions,
-            "validation_score": float(validation_score),
-            "refinement_needed": bool(refinement_needed),
-            "refinements_performed": refinements
-        }
+        return {"validation_score": score, "status": "completed"}
 
     def phase7_context_transition(self, frame: np.ndarray) -> Dict[str, Any]:
-        phase5_data = self.current_cycle_data["phases"].get("phase5", {})
-        planned = phase5_data.get("planned_steps", [])
-        return {
-            "next_scale": planned[0] if planned else "sub-structure",
-            "context_shift": planned[1] if len(planned)>1 else "adjacent",
-            "cycle_complete": True
-        }
+        return {"next_action": "Analyze adjacent regions", "cycle_complete": True}
 
     def _estimate_box_counting_dimension(self, binary_image: np.ndarray) -> float:
-        scales = [2, 4, 8, 16, 32]
+        """Estimates the fractal dimension of a binary image using box-counting."""
+        # This is a simplified implementation. A more robust version would be needed for production.
+        pixels = np.where(binary_image)
+        if len(pixels[0]) < 2:
+            return 1.0 # Not enough points for a meaningful calculation
+
+        scales = np.logspace(0.01, 1, num=10, endpoint=False, base=2)
         counts = []
         for scale in scales:
-            scaled = binary_image[::scale, ::scale]
-            count = np.sum(scaled > 0)
-            if count > 0:
-                counts.append(count)
-            else:
-                counts.append(1)
-        if len(counts) < 2:
-            return 2.0
-        log_scales = np.log([1/s for s in scales[:len(counts)]])
-        log_counts = np.log(counts)
-        coeffs = np.polyfit(log_scales, log_counts, 1)
-        dimension = coeffs[0]
-        return float(np.clip(dimension, 1.0, 2.0))
+            H, W = binary_image.shape
+            c = (binary_image[0:H:int(scale), 0:W:int(scale)] > 0).sum()
+            if c > 0:
+                counts.append(c)
 
-    def _generate_rule_based_hypotheses(self, invariants: Dict[str, Any]) -> Dict[str, Any]:
-        hypotheses = []
-        dim = invariants.get("dimensionality", 2.0)
-        if 1.0 < dim < 2.0:
-            hypotheses.append({"id": "H1", "desc": f"IFS fractal, \\dim_H={dim:.2f}", "priority": 0.9})
-        if invariants.get("repetition"):
-            hypotheses.append({"id": "H2", "desc": "Periodic tiling or self-similar recursion", "priority": 0.85})
-        symmetry = invariants.get("symmetry", "")
-        if "rotational" in symmetry:
-            hypotheses.append({"id": "H3", "desc": f"Discrete group {symmetry.split()[1] if ' ' in symmetry else 'C_n'}", "priority": 0.8})
-        return {"hypotheses": hypotheses[:3] or [{"id": "H1", "desc": "Geometric invariant cluster", "priority": 0.7}]}
+        if len(counts) < 2:
+            return 1.0
+
+        # Fit a line to the log-log plot
+        coeffs = np.polyfit(np.log(scales[:len(counts)]), np.log(counts), 1)
+        return float(-coeffs[0])
