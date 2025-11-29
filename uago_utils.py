@@ -2,106 +2,132 @@ import json
 import os
 import zipfile
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import logging
 import numpy as np
 import cv2
+from pathlib import Path
 
-def setup_logging(log_level=logging.INFO) -> logging.Logger:
-    logger = logging.getLogger("UAGO")
+# --- Project Path Management ---
+PROJECTS_DIR = Path("projects")
+PROJECTS_DIR.mkdir(exist_ok=True)
+
+def get_project_path(project_name: str) -> Optional[Path]:
+    if not project_name:
+        return None
+    return PROJECTS_DIR / project_name
+
+def setup_logging(project_name: str, log_level=logging.INFO) -> logging.Logger:
+    """Sets up a logger that writes to a project-specific log file."""
+    logger = logging.getLogger(f"UAGO-{project_name}")
     logger.setLevel(log_level)
 
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+    # Prevent duplicate handlers
+    if logger.handlers:
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+
+    log_dir = get_project_path(project_name) / "logs"
+    log_dir.mkdir(exist_ok=True, parents=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"uago_log_{timestamp}.txt"
+
+    handler = logging.FileHandler(log_file)
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    # Also log to console for debugging
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
 
     return logger
 
-def load_config(config_path: str = "config.json") -> Dict[str, Any]:
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logging.warning(f"Failed to load config: {e}")
+def save_mistral_response(project_name: str, phase: str, response: Dict[str, Any]) -> str:
+    """Saves the raw Mistral JSON response to the project's output directory."""
+    project_path = get_project_path(project_name)
+    output_dir = project_path / "output"
+    output_dir.mkdir(exist_ok=True, parents=True)
 
-    return {"api_key": None, "demo_mode": True}
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"mistral_{phase}_{timestamp}.json"
+    filepath = output_dir / filename
 
-def save_config(config: Dict[str, Any], config_path: str = "config.json"):
     try:
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2)
+        with open(filepath, 'w') as f:
+            json.dump(response, f, indent=2)
+        return str(filepath)
     except Exception as e:
-        logging.error(f"Failed to save config: {e}")
+        logging.error(f"Failed to save Mistral response: {e}")
+        return ""
 
-def save_phase_data(phase_num: int, data: Dict[str, Any], output_dir: str = "output") -> str:
-    os.makedirs(output_dir, exist_ok=True)
+def save_phase_data(project_name: str, phase_num: int, data: Dict[str, Any]) -> str:
+    """Saves data for a single phase to the project's output directory."""
+    project_path = get_project_path(project_name)
+    output_dir = project_path / "output"
+    output_dir.mkdir(exist_ok=True, parents=True)
 
-    # Use filesystem-safe timestamp format (no colons)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"phase{phase_num}_{timestamp}.json"
-    filepath = os.path.join(output_dir, filename)
+    filepath = output_dir / filename
 
     try:
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
-        return filepath
+        return str(filepath)
     except Exception as e:
         logging.error(f"Failed to save phase data: {e}")
         return ""
 
-def save_full_cycle(cycle_data: Dict[str, Any], output_dir: str = "output") -> str:
-    os.makedirs(output_dir, exist_ok=True)
+def save_full_cycle(project_name: str, cycle_data: Dict[str, Any]) -> str:
+    """Saves the entire cycle data as a JSON file in the project's output directory."""
+    project_path = get_project_path(project_name)
+    output_dir = project_path / "output"
+    output_dir.mkdir(exist_ok=True, parents=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_filename = f"uago_cycle_{timestamp}.zip"
-    zip_filepath = os.path.join(output_dir, zip_filename)
+    filename = f"cycle_data_{timestamp}.json"
+    filepath = output_dir / filename
 
     try:
-        with zipfile.ZipFile(zip_filepath, 'w') as zipf:
-            cycle_json = f"cycle_{timestamp}.json"
-            zipf.writestr(cycle_json, json.dumps(cycle_data, indent=2))
-
-            for phase_num in range(1, 8):
-                phase_key = f"phase{phase_num}"
-                if phase_key in cycle_data.get("phases", {}):
-                    phase_json = f"phase{phase_num}_{timestamp}.json"
-                    zipf.writestr(
-                        phase_json,
-                        json.dumps(cycle_data["phases"][phase_key], indent=2)
-                    )
-
-            readme = f"""UAGO Observation Cycle Results
-Generated: {timestamp}
-
-This archive contains the complete mathematical analysis of an observed structure.
-
-Files:
-- cycle_{timestamp}.json: Complete cycle data
-- phase1-7_{timestamp}.json: Individual phase results
-
-Phases:
-1. Primary Structure Detection
-2. Coarse Invariant Extraction
-3. Hypothesis Generation
-4. Adaptive Measurement Request
-5. Integration & Minimal Model Search
-6. Predictive Validation & Refinement
-7. Scale / Context Transition
-
-For more information, see the UAGO framework documentation.
-"""
-            zipf.writestr("README.txt", readme)
-
-        return zip_filepath
+        with open(filepath, 'w') as f:
+            json.dump(cycle_data, f, indent=2)
+        return str(filepath)
     except Exception as e:
-        logging.error(f"Failed to create cycle archive: {e}")
+        logging.error(f"Failed to save full cycle data: {e}")
         return ""
+
+def export_project_zip(project_name: str) -> Optional[str]:
+    """Creates a ZIP archive of the entire project directory."""
+    project_path = get_project_path(project_name)
+    if not project_path or not project_path.exists():
+        logging.error(f"Project '{project_name}' not found for export.")
+        return None
+
+    export_dir = project_path / "output" / "exports"
+    export_dir.mkdir(exist_ok=True, parents=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_filename = f"{project_name}_export_{timestamp}.zip"
+    zip_filepath = export_dir / zip_filename
+
+    try:
+        with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in project_path.rglob('*'):
+                # Don't include previous exports in the new zip
+                if "exports" not in file_path.parts:
+                    zipf.write(file_path, file_path.relative_to(project_path))
+        return str(zip_filepath)
+    except Exception as e:
+        logging.error(f"Failed to create project archive for '{project_name}': {e}")
+        return None
+
+# --- Unchanged Utility Functions (No file I/O) ---
 
 def process_image_input(image_path: str) -> np.ndarray:
     try:
@@ -133,20 +159,6 @@ def process_video_input(video_path: str, frame_skip: int = 30) -> list:
         return frames
     except Exception as e:
         logging.error(f"Error processing video: {e}")
-        raise
-
-def capture_from_webcam() -> np.ndarray:
-    try:
-        cap = cv2.VideoCapture(0)
-        ret, frame = cap.read()
-        cap.release()
-
-        if not ret:
-            raise ValueError("Could not capture frame from webcam")
-
-        return frame
-    except Exception as e:
-        logging.error(f"Error capturing from webcam: {e}")
         raise
 
 def create_roi_overlay(image: np.ndarray, roi: Dict[str, int]) -> np.ndarray:
@@ -185,12 +197,3 @@ def format_phase_result(phase_num: int, data: Dict[str, Any]) -> str:
             formatted += f"{key}: {value}\n"
 
     return formatted
-
-class LogHandler(logging.Handler):
-    def __init__(self, callback):
-        super().__init__()
-        self.callback = callback
-
-    def emit(self, record):
-        log_entry = self.format(record)
-        self.callback(log_entry)

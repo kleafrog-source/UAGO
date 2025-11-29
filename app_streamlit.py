@@ -40,17 +40,17 @@ def create_project(project_name: str) -> bool:
     """Create a new project directory structure."""
     if not project_name:
         return False
-        
+
     project_path = get_project_path(project_name)
     if project_path.exists():
         return False
-        
+
     try:
         project_path.mkdir(parents=True)
         (project_path / 'data').mkdir()
         (project_path / 'output').mkdir()
         (project_path / 'config').mkdir()
-        
+
         # Create default project config
         project_config = {
             'name': project_name,
@@ -60,10 +60,10 @@ def create_project(project_name: str) -> bool:
             'version': '1.0.0',
             'cycle_data': None
         }
-        
+
         with open(project_path / 'project_config.json', 'w', encoding='utf-8') as f:
             json.dump(project_config, f, indent=2)
-            
+
         return True
     except Exception as e:
         st.error(f"Failed to create project: {e}")
@@ -73,11 +73,11 @@ def delete_project(project_name: str) -> bool:
     """Delete a project and all its contents."""
     if not project_name:
         return False
-        
+
     project_path = get_project_path(project_name)
     if not project_path.exists():
         return False
-        
+
     try:
         shutil.rmtree(project_path)
         return True
@@ -89,24 +89,24 @@ def save_project(project_name: str, cycle_data: Dict) -> bool:
     """Save project data to the project directory."""
     try:
         project_path = get_project_path(project_name)
-        
+
         # Create necessary directories
         (project_path / 'output').mkdir(parents=True, exist_ok=True)
         (project_path / 'logs').mkdir(parents=True, exist_ok=True)
         (project_path / 'prompts').mkdir(parents=True, exist_ok=True)
         (project_path / 'debug').mkdir(parents=True, exist_ok=True)
-        
+
         # Save cycle data
         cycle_data_path = project_path / 'cycle_data.json'
         with open(cycle_data_path, 'w', encoding='utf-8') as f:
             json.dump(cycle_data, f, indent=2)
-        
+
         # Save logs if they exist
         if 'logs' in st.session_state and st.session_state.logs:
             log_path = project_path / 'logs' / f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             with open(log_path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(st.session_state.logs))
-            
+
         # Update project config
         config_path = project_path / 'project_config.json'
         config = {
@@ -123,7 +123,7 @@ def save_project(project_name: str, cycle_data: Dict) -> bool:
                 'cycle_data': str(cycle_data_path.relative_to(project_path))
             }
         }
-        
+
         # Preserve existing config if it exists
         if config_path.exists():
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -132,14 +132,14 @@ def save_project(project_name: str, cycle_data: Dict) -> bool:
                 for key, value in existing_config.items():
                     if key not in config:
                         config[key] = value
-        
+
         # Save the updated config
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2)
-            
+
         # Export a zip of the project for backup
         export_project(project_name)
-            
+
         return True
     except Exception as e:
         add_log(f"Error saving project: {str(e)}", "ERROR")
@@ -151,31 +151,31 @@ def export_project(project_name: str) -> Optional[str]:
         project_path = get_project_path(project_name)
         if not project_path.exists():
             return None
-            
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         zip_filename = f"{project_name}_{timestamp}.zip"
-        
+
         # Create exports directory in the project's output folder
         exports_dir = project_path / 'output' / 'exports'
         exports_dir.mkdir(parents=True, exist_ok=True)
         zip_path = exports_dir / zip_filename
-        
+
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for root, _, files in os.walk(project_path):
                 # Skip the exports directory to avoid recursive zipping
                 if 'exports' in root.split(os.sep):
                     continue
-                    
+
                 for file in files:
                     file_path = Path(root) / file
                     arcname = str(file_path.relative_to(project_path.parent))
                     zipf.write(file_path, arcname)
-        
+
         # Also create a copy in the root exports directory for backward compatibility
         root_exports_dir = Path("exports")
         root_exports_dir.mkdir(exist_ok=True)
         shutil.copy2(zip_path, root_exports_dir / zip_filename)
-                    
+
         return str(zip_path)
     except Exception as e:
         add_log(f"Error exporting project: {str(e)}", "ERROR")
@@ -192,10 +192,10 @@ def load_project(project_name: str) -> Optional[Dict]:
     try:
         project_path = get_project_path(project_name)
         cycle_data_path = project_path / 'cycle_data.json'
-        
+
         if not cycle_data_path.exists():
             return None
-            
+
         with open(cycle_data_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
@@ -286,20 +286,20 @@ with st.sidebar:
         st.markdown(f"**Current Project:** {st.session_state.current_project}")
     else:
         st.markdown("**No active project**")
-    
+
     # Project actions
     col1, col2 = st.columns(2)
-    
+
     with col1:
         # Button to show project list
         if st.button("📂 Project List"):
             st.session_state.show_project_list = True
-    
+
     with col2:
         # Clear project button
         if st.button("🆕 New Project"):
             st.session_state.show_new_project = True
-    
+
     # Project list modal
     if st.session_state.get('show_project_list', False):
         with st.sidebar.expander("📋 Project List", expanded=True):
@@ -326,16 +326,16 @@ with st.sidebar:
                                 st.rerun()
             else:
                 st.info("No projects found")
-            
+
             if st.button("Close"):
                 st.session_state.show_project_list = False
                 st.rerun()
-    
+
     # New project input
     if st.session_state.get('show_new_project', False):
-        new_project = st.text_input("New Project Name:", "", key="new_project_input", 
+        new_project = st.text_input("New Project Name:", "", key="new_project_input",
                                   on_change=lambda: st.session_state.update({"create_new_project": True}))
-        
+
         if st.session_state.get('create_new_project', False) and new_project:
             if create_project(new_project):
                 st.session_state.current_project = new_project
@@ -343,7 +343,7 @@ with st.sidebar:
                 st.session_state.show_new_project = False
                 st.session_state.create_new_project = False
                 st.rerun()
-    
+
     # Save Project button
     if st.session_state.get('current_project') and st.button("💾 Save Project"):
         if 'cycle_data' in st.session_state and st.session_state.cycle_data is not None:
@@ -353,7 +353,7 @@ with st.sidebar:
                 st.sidebar.error("Failed to save project")
         else:
             st.sidebar.warning("No cycle data to save")
-    
+
     st.markdown("---")
     st.markdown("### System Status")
     st.markdown(f"**Project Initialized:** {st.session_state.get('project_initialized', False)}")
@@ -586,7 +586,7 @@ with tab1:
 
 with tab2:
     st.header("Results & Analysis")
-    
+
     # Add visualization tab if available
     if VISUALIZATION_ENABLED and st.session_state.cycle_data:
         if st.button("✨ Generate 3D Visualization"):
@@ -601,18 +601,18 @@ with tab2:
                         # Get a fresh visualizer instance with current project context
                         current_visualizer = get_visualizer()
                         html_path = current_visualizer.generate_visualization(st.session_state.cycle_data)
-                        
+
                         # Read and store the HTML content
                         with open(html_path, 'r', encoding='utf-8') as f:
                             html_content = f.read()
-                        
+
                         # Encode the HTML for embedding
                         b64_html = base64.b64encode(html_content.encode()).decode()
-                        
+
                         # Store in session state
                         st.session_state.visualization_html = b64_html
                         st.session_state.show_visualization = True
-                        
+
                         # Log the location of the saved visualization
                         add_log(f"Visualization saved to: {html_path}")
                     except Exception as e:
@@ -622,22 +622,22 @@ with tab2:
                 except Exception as e:
                     st.error(f"Error generating visualization: {str(e)}")
                     st.session_state.show_visualization = False
-        
+
         # Show visualization if available
         if st.session_state.show_visualization and st.session_state.visualization_html:
             st.subheader("🎨 Interactive Visualization")
-            
+
             # Display the visualization in an iframe
             if st.session_state.visualization_html:
                 html = f"""
                 <div style="width: 100%; height: 600px; overflow: hidden;">
-                    <iframe src="data:text/html;base64,{st.session_state.visualization_html}" 
+                    <iframe src="data:text/html;base64,{st.session_state.visualization_html}"
                             style="width: 100%; height: 100%; border: none;">
                     </iframe>
                 </div>
                 """
                 st.components.v1.html(html, height=600)
-            
+
             # Add download button
             st.download_button(
                 label="💾 Download Visualization",
@@ -645,7 +645,7 @@ with tab2:
                 file_name=f"uago_visualization_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
                 mime="text/html"
             )
-    
+
     # Original content
     st.header("Analysis Results")
 
@@ -756,7 +756,7 @@ with tab2:
                             with open(filename, 'w') as f:
                                 json.dump(st.session_state.cycle_data, f, indent=2)
                             st.success(f"Results exported to {filename}")
-                            
+
                             # Add download button for the exported file
                             with open(filename, 'r') as f:
                                 st.download_button(
